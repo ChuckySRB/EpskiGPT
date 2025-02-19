@@ -1,52 +1,35 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import time
+import wandb
 
-# hyperparameters
-batch_size = 64 # how many independent sequences will we process in parallel?
-block_size = 256 # what is the maximum context length for predictions?
-max_iters = 3000
-eval_interval = 500
-learning_rate = 1e-4
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
-input_file = 'data/narodne_pesme.txt'
-n_embd = 384 # the number of dimensions in the embedding
-n_heads = 6 # the number of attention heads
-n_layers = 6 # the number of transformer blocks
-dropout = 0.2 # the dropout rate
-generate_length = 2000
-# ------------
 
-torch.manual_seed(1337)
+CONFIG = {
+        'batch_size': 64,
+        'block_size': 256,
+        'max_iters': 5000,
+        'eval_interval': 500,
+        'learning_rate': 1e-4,
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'eval_iters': 200,
+        'n_embd': 384,
+        'n_heads': 6,
+        'n_layers': 6,
+        'dropout': 0.2,
+        'generate_length': 2000,
+        'input_file': 'data/narodne_pesme.txt',
+        'output_file': 'output/generated_text.txt',
+        'model_save_path': 'model/model_checkpoint.pt'
+    }
 
-with open(input_file, 'r', encoding='utf-8') as f:
-    text = f.read()
 
-# here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
-# create a mapping from characters to integers
-stoi = { ch:i for i,ch in enumerate(chars) }
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+def encode(s, stoi):
+    return [stoi[c] for c in s]
 
-# Train and test splits
-data = torch.tensor(encode(text), dtype=torch.long)
-n = int(0.9*len(data)) # first 90% will be train, rest val
-train_data = data[:n]
-val_data = data[n:]
+def decode(l, itos):
+    return ''.join([itos[i] for i in l])
 
-# data loading
-def get_batch(split):
-    # generate a small batch of data of inputs x and targets y
-    data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    x, y = x.to(device), y.to(device)
-    return x, y
 
 @torch.no_grad()
 def estimate_loss():
@@ -64,7 +47,7 @@ def estimate_loss():
 
 class AttentionHead(nn.Module):
     """ one head of self-attention """
-    def __init__(self, head_size, dropout):
+    def __init__(self, n_embd, block_size, head_size, dropout):
         super().__init__()
         self.head_size = head_size
         self.key = nn.Linear(n_embd, head_size, bias=False)
@@ -88,9 +71,9 @@ class AttentionHead(nn.Module):
 
 class MultiHeadAttention(nn.Module):
     """ multiple heads of self-attention in parallel """
-    def __init__(self, num_heads, head_size, dropout):
+    def __init__(self, n_embd, block_size, num_heads, head_size, dropout):
         super().__init__()
-        self.heads = nn.ModuleList([AttentionHead(head_size, dropout) for _ in range(num_heads)])
+        self.heads = nn.ModuleList([AttentionHead(n_embd, block_size, head_size, dropout) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
 
@@ -114,29 +97,13 @@ class FeedForward(nn.Module):
         x = self.net(x)
         return x
 
-class LayerNorm(nn.Module):
-  def __init__(self, dim, eps=1e-5):
-    self.eps = eps
-    self.gamma = torch.ones(dim)
-    self.beta = torch.zeros(dim)
-
-  def __call__(self, x):
-    # calculate the forward pass
-    xmean = x.mean(1, keepdim=True) # batch mean
-    xvar = x.var(1, keepdim=True) # batch variance
-    xhat = (x - xmean) / torch.sqrt(xvar + self.eps) # normalize to unit variance
-    self.out = self.gamma * xhat + self.beta
-    return self.out
-
-  def parameters(self):
-    return [self.gamma, self.beta]
 
 class TransformerBlock(nn.Module):
     """ Transformer block: communication followed by computation """
-    def __init__(self, n_embd, n_heads, dropout):
+    def __init__(self, n_embd, block_size, n_heads, dropout):
         super().__init__()
         head_size = n_embd // n_heads
-        self.multi_head_attention = MultiHeadAttention(n_heads, head_size, dropout)
+        self.multi_head_attention = MultiHeadAttention(n_embd, block_size, n_heads, head_size, dropout)
         self.feed_forward = FeedForward(n_embd, dropout)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -150,17 +117,18 @@ class TransformerBlock(nn.Module):
 # GPT model
 class GPT(nn.Module):
 
-    def __init__(self, vocab_size, n_embd, n_layers, n_heads = 4, dropout = 0.2):
+    def __init__(self, vocab_size, block_size = CONFIG['block_size'], n_embd = CONFIG['n_embd'], n_layers = CONFIG['n_layers'], n_heads = CONFIG['n_heads'], dropout = CONFIG['dropout']):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.transformer_blocks = nn.ModuleList([TransformerBlock(n_embd, n_heads, dropout) for _ in range(n_layers)])
+        self.transformer_blocks = nn.ModuleList([TransformerBlock(n_embd, block_size, n_heads, dropout) for _ in range(n_layers)])
         self.ln = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
-    def forward(self, idx, targets=None):
 
+    def forward(self, idx, targets=None):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         B, T = idx.shape
         # idx and targets are both (B,T) tensor of integers
         tok_embd = self.token_embedding_table(idx) # (B,T,C)
@@ -181,7 +149,8 @@ class GPT(nn.Module):
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
+    def generate(self, idx, block_size, max_new_tokens):
+
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -block_size:]
@@ -197,44 +166,145 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
-model = GPT(vocab_size, n_embd, n_layers, n_heads, dropout)
-m = model.to(device)
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+def load_data(input_file):
+    with open(input_file, 'r', encoding='utf-8') as f:
+        text = f.read()
 
-for iter in range(max_iters):
+    # Create character level tokenization
+    chars = sorted(list(set(text)))
+    vocab_size = len(chars)
+    stoi = { ch:i for i,ch in enumerate(chars) }
+    itos = { i:ch for i,ch in enumerate(chars) }
 
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    # Train and test splits
+    data = torch.tensor(encode(text, stoi), dtype=torch.long)
+    n = int(0.9*len(data))
+    train_data = data[:n]
+    val_data = data[n:]
+    
+    return train_data, val_data, stoi, itos, vocab_size
 
-    # sample a batch of data
-    xb, yb = get_batch('train')
+def get_batch(data, block_size, batch_size, device):
+    ix = torch.randint(len(data) - block_size, (batch_size,))
+    x = torch.stack([data[i:i+block_size] for i in ix])
+    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    x, y = x.to(device), y.to(device)
+    return x, y
 
-    # evaluate the loss
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+@torch.no_grad()
+def estimate_loss(model, eval_iters, train_data, val_data, block_size, batch_size, device):
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        data = train_data if split == 'train' else val_data
+        for k in range(eval_iters):
+            X, Y = get_batch(data, block_size, batch_size, device)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()     
+        out[split] = losses.mean()
+    model.train()
+    return out
 
-# Save the trained model
-model_save_path = 'model/model_checkpoint.pt'
-torch.save({
-    'model_state_dict': model.state_dict(),
-    'optimizer_state_dict': optimizer.state_dict(),
-    'iter': iter,
-    'loss': loss,
-}, model_save_path)
-print(f"Model saved to {model_save_path}")
+def train_model(model, train_data, val_data, config):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'])
+    
+    # Initialize wandb
+    wandb.init(
+        project="EpskiGPT",
+        config=config
+    )
 
-# Generate text and save to file
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-generated_text = decode(m.generate(context, max_new_tokens=generate_length)[0].tolist())
+    time_start = time.time()
 
-# Save generated text to file
-output_file = 'output/generated_text.txt'
-with open(output_file, 'w', encoding='utf-8') as f:
-    f.write(generated_text)
-print(f"Generated text saved to {output_file}")
+    for iter in range(config['max_iters']):
+        if iter % config['eval_interval'] == 0:
+            losses = estimate_loss(
+                model, config['eval_iters'], 
+                train_data, val_data,
+                config['block_size'], config['batch_size'],
+                config['device']
+            )
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            wandb.log({
+                "train_loss": losses['train'],
+                "val_loss": losses['val'],
+                "iteration": iter,
+            })
+
+        xb, yb = get_batch(train_data, config['block_size'], 
+                          config['batch_size'], config['device'])
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+        wandb.log({
+            "batch_loss": loss.item(),
+            "iteration": iter,
+        })
+
+    time_end = time.time()
+    time_needed = time_end - time_start
+    print(f"Time taken: {time.strftime('%H:%M:%S', time.gmtime(time_needed))}")
+    
+    wandb.finish()
+    return model, optimizer, loss
+
+def save_model(model, optimizer, loss, iter, config):
+    # Save model
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'iter': iter,
+        'loss': loss,
+    }, config['model_save_path'])
+    print(f"Model saved to {config['model_save_path']}")
+
+
+
+def generate_output(model: GPT, config: dict, itos: dict):
+        # Generate text
+    context = torch.zeros((1, 1), dtype=torch.long, device=config['device'])
+    generated_text = decode(model.generate(context, block_size=config['block_size'],
+                          max_new_tokens=config['generate_length'])[0].tolist(), itos)
+
+    # Save generated text
+    output_file = 'output/generated_text.txt'
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(generated_text)
+    print(f"Generated text saved to {output_file}")
+def main():
+    # Configuration
+    config = CONFIG
+
+    # Set random seed
+    torch.manual_seed(1337)
+
+    # Load and prepare data
+    train_data, val_data, stoi, itos, vocab_size = load_data(
+        config['input_file']
+    )
+
+    # Initialize model
+    model = GPT(
+        vocab_size=vocab_size,
+        block_size=config['block_size'],
+        n_embd=config['n_embd'],
+        n_layers=config['n_layers'],
+        n_heads=config['n_heads'],
+        dropout=config['dropout']
+    )
+
+    model.to(config['device'])
+
+    # Train model
+    model, optimizer, loss = train_model(model, train_data, val_data, config)
+
+    # Save model and generate text
+    save_model(model, optimizer, loss, config['max_iters'], config, decode)
+    generate_output(model, config, itos)
+
+if __name__ == '__main__':
+    main()

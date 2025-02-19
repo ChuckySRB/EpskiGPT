@@ -1,6 +1,7 @@
 # My Ignore
 .epskigpt
 **.pt
+wandb
 
 # Initially taken from Github's Python gitignore file
 
