@@ -52,7 +52,8 @@ class Tokenizer:
         self.merges = {} # (int, int) -> int
         self.pattern = "" # str
         self.special_tokens = {} # str -> int, e.g. {'<|endoftext|>': 100257}
-        self.vocab = {} # int -> char
+        self.vocab = {} # int -> char | tuple
+        self.encoder = {} # char -> int
 
     def train(self, text, vocab_size):
         # Tokenizer can train a vocabulary of size vocab_size from text
