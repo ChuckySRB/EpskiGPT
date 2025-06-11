@@ -1,10 +1,12 @@
 from .tokenizer import Tokenizer, count_conseq_tokens, merge
 import regex as re
+from tqdm import tqdm
+
 
 # the main GPT text split patterns, see
 # https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py
 GPT2_SPLIT_PATTERN = r"""'(?:?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-GPT4_SPLIT_PATTERN = r"""'(?i:[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
+GPT4_SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
 
 
 class Cirilica(Tokenizer):
@@ -19,10 +21,10 @@ class Cirilica(Tokenizer):
         self.special_tokens = {}
         self.inverse_special_tokens = {}
 
-    def _create_vocabulary(train_text:str):
+    def _create_vocabulary(self, train_text:str):
         chars = sorted(list(set(train_text)))
-        vocab = { i:ch for i,ch in enumerate(chars) }
-        return vocab
+        self.vocab = { i:ch for i,ch in enumerate(chars) }
+
 
     # Тренирање токенајзера
     # Свака епоха замени један токен као најчешће понављани пар
@@ -31,11 +33,11 @@ class Cirilica(Tokenizer):
             Прави вокабулар токена на основу датог тренинг текста
         """
         # Направи почетни вокабулар
-        self.vocab = self._create_vocabulary(text)
+        self._create_vocabulary(text)
         self.dict_size = len(self.vocab)
         self.vocab_size = vocab_size
 
-        # Енкодер за превоћење текста у број
+        # Енкодер за превођење текста у број
         self.encoder = {v:k for k, v in self.vocab.items()}
         
         # Подели на делове са регексом
@@ -44,14 +46,17 @@ class Cirilica(Tokenizer):
         # Преведи текст у почетне токене
         tokens = []
         for chunk in text_chunked:
-            tokens.append([encoder[slovo] for slovo in chunk])
+            tokens.append([self.encoder[slovo] for slovo in chunk])
 
         # За сваки регекс изброј counts понављања
         i = len(self.vocab.keys())
-        while i < vocab_size:
+        steps = vocab_size - i  # укупан број корака
+
+        # Користи tqdm за праћење напретка
+        for _ in tqdm(range(steps), desc="Training BPE"):
             counts = {}
 
-            # Извући прој понављања
+            # Извући број понављања
             for chunk in tokens:
                 counts = count_conseq_tokens(chunk, counts)
             
@@ -64,13 +69,13 @@ class Cirilica(Tokenizer):
             self.vocab[i] = (self.vocab[pair[0]] , self.vocab[pair[1]])
             
             # Повећај бројач
-            i+=1
-        
+            i += 1
+
         # Додај специјалне токене
 
     def decode(self, tokens: list[int]) -> str:
         """
-            Дежифрује дату листу токена назад у ћирилични текст
+            Дешифрује дату листу токена назад у ћирилични текст
         """
         text:str = ""
         
@@ -78,7 +83,7 @@ class Cirilica(Tokenizer):
         i = self.vocab_size - 1
         reverse = {v:k for k, v in self.vocab.items()}
  
-        while i > self.dict_size:
+        while i >= self.dict_size:
             pair = self.vocab[i]
             j = 0
 

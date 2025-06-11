@@ -70,14 +70,13 @@ class Tokenizer:
         # Tokenizer can decode a list of integers into a string
         raise NotImplementedError
     
-    # TODO: FINISH THIS
     def save(self, file_path):
         """
             Чува истренирани вокабулар у .модел фајл
         """
         # write the model: to be used in load() later
         model_file = file_path + ".model"
-        with open(model_file, 'w') as f:
+        with open(model_file, 'w', encoding="utf-8") as f:
             # write the version, pattern and merges, that's all that's needed
             f.write("cirilo v1\n")
             f.write(f"{self.pattern}\n")
@@ -90,7 +89,7 @@ class Tokenizer:
             f.write(f"{self.vocab_size}\n")
             for i in range(self.dict_size, self.vocab_size):
                 value = self.vocab[i]
-                f.write(f"{value}\n")
+                f.write(f"{str(value)}\n")
         # write the vocab: for the human to look at
         # vocab_file = file_prefix + ".vocab"
         # inverted_merges = {idx: pair for pair, idx in self.merges.items()}
@@ -104,23 +103,24 @@ class Tokenizer:
         """
         assert model_file.endswith(".model")
         # read the model file
-        with open(model_file, 'r') as f:
+        with open(model_file, 'r', encoding="utf-8") as f:
             # read the version
             version = f.readline().strip()
-            assert version == "minbpe v1"
-            
+            print(version)
             # read the pattern
             self.pattern = f.readline().strip()
             
             # read the vocab
             self.dict_size = int(f.readline().strip())
             for i in range(self.dict_size):
-                value = chr(f.readline().strip())
+                value = chr(int(f.readline().strip()))
                 self.vocab[i] = value
             
             # merges
-            self.vocab_size = f.readline().strip()
+            self.encoder = { v:k for k, v in self.vocab.items()}
+            self.vocab_size = int(f.readline().strip())
             for i in range(self.dict_size, self.vocab_size):
                 value = ast.literal_eval(f.readline().strip())
+                print(value)
                 self.vocab[i] = value
             

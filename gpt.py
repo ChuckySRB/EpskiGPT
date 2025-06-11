@@ -3,13 +3,18 @@ import torch.nn as nn
 from torch.nn import functional as F
 import time
 import wandb
+from tokenizer import Tokenizer, Cirilica
 
 
 CONFIG = {
+        'tokenizer': Cirilica,
+        'trained_tokenizer': None,
+        'tokenizer_save': "model/cirilica_tokenizer",
+        'vocab_size': 500,
         'batch_size': 64,
         'block_size': 256,
-        'max_iters': 5000,
-        'eval_interval': 500,
+        'max_iters': 2,
+        'eval_interval': 1,
         'learning_rate': 1e-4,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'eval_iters': 200,
@@ -18,9 +23,9 @@ CONFIG = {
         'n_layers': 6,
         'dropout': 0.2,
         'generate_length': 2000,
-        'input_file': 'data/narodne_pesme.txt',
-        'output_file': 'output/generated_text.txt',
-        'model_save_path': 'model/model_checkpoint.pt'
+        'input_file': 'data/test_text.txt',
+        'output_file': 'output/generated_text_cirilica_tokenizer.txt',
+        'model_save_path': 'model/model_checkpoint_cirilica.pt'
     }
 
 
@@ -104,8 +109,16 @@ class TransformerBlock(nn.Module):
 # GPT model
 class GPT(nn.Module):
 
-    def __init__(self, vocab_size, block_size = CONFIG['block_size'], n_embd = CONFIG['n_embd'], n_layers = CONFIG['n_layers'], n_heads = CONFIG['n_heads'], dropout = CONFIG['dropout']):
+    def __init__(self, 
+                 tokenizer: Tokenizer, 
+                 block_size = CONFIG['block_size'], 
+                 n_embd = CONFIG['n_embd'], 
+                 n_layers = CONFIG['n_layers'], 
+                 n_heads = CONFIG['n_heads'], 
+                 dropout = CONFIG['dropout']):
         super().__init__()
+        vocab_size = tokenizer.vocab_size
+        self.tokenizer = tokenizer
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
@@ -153,24 +166,30 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
+def train_tokenizer(text):
+    tokenizer = CONFIG['tokenizer']()
+    tokenizer.train(text, CONFIG['vocab_size'])
+    return tokenizer    
 
 def load_data(input_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         text = f.read()
 
-    # Create character level tokenization
-    chars = sorted(list(set(text)))
-    vocab_size = len(chars)
-    stoi = { ch:i for i,ch in enumerate(chars) }
-    itos = { i:ch for i,ch in enumerate(chars) }
-
+    # Load tokenizer
+    if not CONFIG['trained_tokenizer']:
+        tokenizer = train_tokenizer(text)
+    else:
+        tokenizer:Tokenizer = CONFIG['tokenizer']()
+        tokenizer.load(CONFIG['trained_tokenizer'])
+     
     # Train and test splits
-    data = torch.tensor(encode(text, stoi), dtype=torch.long)
+
+    data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
     n = int(0.9*len(data))
     train_data = data[:n]
     val_data = data[n:]
     
-    return train_data, val_data, stoi, itos, vocab_size
+    return train_data, val_data, tokenizer
 
 def get_batch(data, block_size, batch_size, device):
     ix = torch.randint(len(data) - block_size, (batch_size,))
@@ -193,6 +212,8 @@ def estimate_loss(model, eval_iters, train_data, val_data, block_size, batch_siz
         out[split] = losses.mean()
     model.train()
     return out
+
+
 
 def train_model(model, train_data, val_data, config):
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'])
@@ -251,17 +272,19 @@ def save_model(model, optimizer, loss, iter, config):
 
 
 
-def generate_output(model: GPT, config: dict, itos: dict):
-        # Generate text
+def generate_output(model: GPT, config: dict, tokenizer: Tokenizer):
+    # Generate text
     context = torch.zeros((1, 1), dtype=torch.long, device=config['device'])
-    generated_text = decode(model.generate(context, block_size=config['block_size'],
-                          max_new_tokens=config['generate_length'])[0].tolist(), itos)
+    generated_text = tokenizer.decode(model.generate(context, block_size=config['block_size'],
+                          max_new_tokens=config['generate_length'])[0].tolist())
 
     # Save generated text
-    output_file = 'output/generated_text.txt'
+    output_file = config['output_file']
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(generated_text)
     print(f"Generated text saved to {output_file}")
+
+
 def main():
     # Configuration
     config = CONFIG
@@ -270,13 +293,13 @@ def main():
     torch.manual_seed(1337)
 
     # Load and prepare data
-    train_data, val_data, stoi, itos, vocab_size = load_data(
+    train_data, val_data, tokenizer = load_data(
         config['input_file']
     )
 
     # Initialize model
     model = GPT(
-        vocab_size=vocab_size,
+        tokenizer=tokenizer,
         block_size=config['block_size'],
         n_embd=config['n_embd'],
         n_layers=config['n_layers'],
@@ -290,8 +313,9 @@ def main():
     model, optimizer, loss = train_model(model, train_data, val_data, config)
 
     # Save model and generate text
-    save_model(model, optimizer, loss, config['max_iters'], config, decode)
-    generate_output(model, config, itos)
+    save_model(model, optimizer, loss, config['max_iters'], config)
+    generate_output(model, config, tokenizer)
+    tokenizer.save(config['tokenizer_save'])
 
 if __name__ == '__main__':
     main()
