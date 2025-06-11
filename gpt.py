@@ -4,17 +4,18 @@ from torch.nn import functional as F
 import time
 import wandb
 from tokenizer import Tokenizer, Cirilica
+from tqdm import trange
 
 
 CONFIG = {
         'tokenizer': Cirilica,
         'trained_tokenizer': None,
         'tokenizer_save': "model/cirilica_tokenizer",
-        'vocab_size': 500,
+        'vocab_size': 3000,
         'batch_size': 64,
         'block_size': 256,
-        'max_iters': 2,
-        'eval_interval': 1,
+        'max_iters': 3000,
+        'eval_interval': 100,
         'learning_rate': 1e-4,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'eval_iters': 200,
@@ -23,7 +24,7 @@ CONFIG = {
         'n_layers': 6,
         'dropout': 0.2,
         'generate_length': 2000,
-        'input_file': 'data/test_text.txt',
+        'input_file': 'data/narodne_pesme.txt',
         'output_file': 'output/generated_text_cirilica_tokenizer.txt',
         'model_save_path': 'model/model_checkpoint_cirilica.pt'
     }
@@ -169,6 +170,9 @@ class GPT(nn.Module):
 def train_tokenizer(text):
     tokenizer = CONFIG['tokenizer']()
     tokenizer.train(text, CONFIG['vocab_size'])
+    if (CONFIG['tokenizer_save']):
+        tokenizer.save(CONFIG['tokenizer_save'])
+        print(f"Токенајзер сачуван у: {CONFIG['tokenizer_save']}")
     return tokenizer    
 
 def load_data(input_file):
@@ -226,7 +230,7 @@ def train_model(model, train_data, val_data, config):
 
     time_start = time.time()
 
-    for iter in range(config['max_iters']):
+    for iter in trange(config['max_iters'], desc="Training"):  # tqdm added here
         if iter % config['eval_interval'] == 0:
             losses = estimate_loss(
                 model, config['eval_iters'], 
@@ -291,13 +295,14 @@ def main():
 
     # Set random seed
     torch.manual_seed(1337)
-
+    print("Учитавање података...")
     # Load and prepare data
     train_data, val_data, tokenizer = load_data(
         config['input_file']
     )
-
+    print("Токенајзер и подаци су учитани")
     # Initialize model
+    print("Учитавање модела...")
     model = GPT(
         tokenizer=tokenizer,
         block_size=config['block_size'],
@@ -310,12 +315,13 @@ def main():
     model.to(config['device'])
 
     # Train model
+    print("Тренирање модела...")
     model, optimizer, loss = train_model(model, train_data, val_data, config)
 
     # Save model and generate text
     save_model(model, optimizer, loss, config['max_iters'], config)
     generate_output(model, config, tokenizer)
-    tokenizer.save(config['tokenizer_save'])
+
 
 if __name__ == '__main__':
     main()
