@@ -1,3 +1,4 @@
+import ast
 
 #   ПОМОЋНЕ ФУНКЦИЈЕ
 
@@ -54,6 +55,8 @@ class Tokenizer:
         self.special_tokens = {} # str -> int, e.g. {'<|endoftext|>': 100257}
         self.vocab = {} # int -> char | tuple
         self.encoder = {} # char -> int
+        self.vocab_size = 0 # lenght of hole vocabulary
+        self.dict_size = 0 # lenght of encoder
 
     def train(self, text, vocab_size):
         # Tokenizer can train a vocabulary of size vocab_size from text
@@ -68,30 +71,26 @@ class Tokenizer:
         raise NotImplementedError
     
     # TODO: FINISH THIS
-    def save(self, file_prefix):
+    def save(self, file_path):
         """
-        Saves two files: file_prefix.vocab and file_prefix.model
-        This is inspired (but not equivalent to!) sentencepiece's model saving:
-        - model file is the critical one, intended for load()
-        - vocab file is just a pretty printed version for human inspection only
+            Чува истренирани вокабулар у .модел фајл
         """
         # write the model: to be used in load() later
-        model_file = file_prefix + ".model"
+        model_file = file_path + ".model"
         with open(model_file, 'w') as f:
             # write the version, pattern and merges, that's all that's needed
-            f.write("minbpe v1\n")
+            f.write("cirilo v1\n")
             f.write(f"{self.pattern}\n")
-            # write the special tokens, first the number of them, then each one
-            f.write(f"{len(self.special_tokens)}\n")
-            for special, idx in self.special_tokens.items():
-                f.write(f"{special} {idx}\n")
-            # the merges dict
-            for idx1, idx2 in self.merges.items():
-                f.write(f"{idx1} {idx2}\n")
             # vocab
-            f.write(f"vocab\n")
-            for idx1, idx2 in self.vocab:
-                f.write(f"{idx1} {idx2}\n")
+            f.write(f"{self.dict_size}\n")
+            for i in range(self.dict_size):
+                value = ord(self.vocab[i])
+                f.write(f"{value}\n")
+            # merges
+            f.write(f"{self.vocab_size}\n")
+            for i in range(self.dict_size, self.vocab_size):
+                value = self.vocab[i]
+                f.write(f"{value}\n")
         # write the vocab: for the human to look at
         # vocab_file = file_prefix + ".vocab"
         # inverted_merges = {idx: pair for pair, idx in self.merges.items()}
@@ -100,34 +99,28 @@ class Tokenizer:
   
 
     def load(self, model_file):
-        """Inverse of save() but only for the model file"""
+        """
+            Учитава сачувани модел
+        """
         assert model_file.endswith(".model")
         # read the model file
-        merges = {}
-        special_tokens = {}
-        idx = 256
-        with open(model_file, 'r', encoding="utf-8") as f:
+        with open(model_file, 'r') as f:
             # read the version
             version = f.readline().strip()
             assert version == "minbpe v1"
+            
             # read the pattern
             self.pattern = f.readline().strip()
-            # read the special tokens
-            num_special = int(f.readline().strip())
-            for _ in range(num_special):
-                special, special_idx = f.readline().strip().split()
-                special_tokens[special] = int(special_idx)
-            # read the merges
-            for line in f:
-                idx1, idx2 = map(int, line.split())
-                merges[(idx1, idx2)] = idx
-                idx += 1
-
-            # read the vocan
-            for line in f:
-                idx1, idx2 = map(int, line.split())
-                merges[(idx1, idx2)] = idx
-                idx += 1
-        self.merges = merges
-        self.special_tokens = special_tokens
-        self.vocab = self._build_vocab()
+            
+            # read the vocab
+            self.dict_size = int(f.readline().strip())
+            for i in range(self.dict_size):
+                value = chr(f.readline().strip())
+                self.vocab[i] = value
+            
+            # merges
+            self.vocab_size = f.readline().strip()
+            for i in range(self.dict_size, self.vocab_size):
+                value = ast.literal_eval(f.readline().strip())
+                self.vocab[i] = value
+            
